@@ -15,6 +15,73 @@ class StubSignature:
     parameters: tuple[str, ...]
 
 
+STANDARD_LIBRARY_DIRECT_CALLS = {
+    "__assert_fail",
+    "__ctype_b_loc",
+    "abort",
+    "abs",
+    "atof",
+    "atoi",
+    "atol",
+    "calloc",
+    "exit",
+    "fclose",
+    "fgetc",
+    "fgets",
+    "fopen",
+    "fputc",
+    "fputs",
+    "fprintf",
+    "fread",
+    "free",
+    "fscanf",
+    "fwrite",
+    "getc",
+    "getchar",
+    "isalpha",
+    "isdigit",
+    "islower",
+    "isspace",
+    "isupper",
+    "labs",
+    "malloc",
+    "memcpy",
+    "memmove",
+    "memset",
+    "perror",
+    "printf",
+    "putchar",
+    "puts",
+    "qsort",
+    "rand",
+    "realloc",
+    "remove",
+    "scanf",
+    "snprintf",
+    "sprintf",
+    "srand",
+    "strcat",
+    "strchr",
+    "strcmp",
+    "strcpy",
+    "strlen",
+    "strncat",
+    "strncmp",
+    "strncpy",
+    "strrchr",
+    "strstr",
+    "strtol",
+    "strtoul",
+    "time",
+    "tolower",
+    "toupper",
+}
+
+
+def should_stub_function(name: str) -> bool:
+    return name not in STANDARD_LIBRARY_DIRECT_CALLS
+
+
 def stub_function_names(context: FunctionContext, cases: list[TestCase]) -> set[str]:
     names = set()
     for case in cases:
@@ -29,12 +96,14 @@ def stub_name(context: FunctionContext, stub: StubIn) -> str | None:
     raw = stub.called_function
     for dependency in context.dependencies:
         if re.search(rf"\b{re.escape(dependency)}\b", raw):
-            return dependency
+            return dependency if should_stub_function(dependency) else None
     match = re.search(r"\b([A-Za-z_]\w*)\s*\(", raw)
     if not match:
         return None
     name = match.group(1)
-    return None if name == context.name else name
+    if name == context.name or not should_stub_function(name):
+        return None
+    return name
 
 
 def stub_prelude(context: FunctionContext, cases: list[TestCase]) -> list[str]:
@@ -42,10 +111,22 @@ def stub_prelude(context: FunctionContext, cases: list[TestCase]) -> list[str]:
     if not signatures:
         return []
     lines = [*_stub_type_declarations(context, signatures), "static int __strut_stub_case_index = 0;"]
+    for name in signatures:
+        lines.append(f"static int {_call_index_name(name)} = 0;")
+    lines.append("static void __strut_reset_stub_calls(void);")
     for signature in signatures.values():
         lines.append(_prototype(signature))
     lines.append("")
     return lines
+
+
+def stub_case_setup(context: FunctionContext, cases: list[TestCase], case_index: int) -> list[str]:
+    if not stub_function_names(context, cases):
+        return []
+    return [
+        f"__strut_stub_case_index = {case_index};",
+        "__strut_reset_stub_calls();",
+    ]
 
 
 def stub_definitions(context: FunctionContext, cases: list[TestCase]) -> list[str]:
@@ -53,22 +134,46 @@ def stub_definitions(context: FunctionContext, cases: list[TestCase]) -> list[st
     if not signatures:
         return []
     lines: list[str] = []
-    grouped: dict[str, list[tuple[int, StubIn]]] = {name: [] for name in signatures}
+    grouped: dict[str, dict[int, list[StubIn]]] = {name: {} for name in signatures}
     for index, case in enumerate(cases, start=1):
         for stub in case.stubins:
             name = stub_name(context, stub)
             if name in grouped:
-                grouped[name].append((index, stub))
+                grouped[name].setdefault(index, []).append(stub)
+
+    lines.append("static void __strut_reset_stub_calls(void)")
+    lines.append("{")
+    for name in signatures:
+        lines.append(f"    {_call_index_name(name)} = 0;")
+    lines.append("}")
+    lines.append("")
 
     for name, signature in signatures.items():
         lines.append(_definition_header(signature))
         lines.append("{")
+        lines.append(f"    int __strut_call_index = {_call_index_name(name)}++;")
         lines.append("    switch (__strut_stub_case_index)")
         lines.append("    {")
-        for index, stub in grouped[name]:
+        for index, stubs in grouped[name].items():
             lines.append(f"    case {index}:")
-            body = _stub_case_body(signature, stub)
-            lines.extend(f"        {line}" for line in body)
+            if len(stubs) == 1:
+                body = _stub_case_body(signature, stubs[0])
+                lines.extend(f"        {line}" for line in body)
+            else:
+                lines.append("        switch (__strut_call_index)")
+                lines.append("        {")
+                for call_index, stub in enumerate(stubs):
+                    lines.append(f"        case {call_index}:")
+                    body = _stub_case_body(signature, stub)
+                    lines.extend(f"            {line}" for line in body)
+                    lines.append("            break;")
+                lines.append("        default:")
+                default_return = _default_return(signature.return_type)
+                if default_return:
+                    lines.append(f"            {default_return}")
+                else:
+                    lines.append("            break;")
+                lines.append("        }")
             lines.append("        break;")
         lines.append("    default:")
         default_return = _default_return(signature.return_type)
@@ -83,6 +188,11 @@ def stub_definitions(context: FunctionContext, cases: list[TestCase]) -> list[st
         lines.append("}")
         lines.append("")
     return lines
+
+
+def _call_index_name(name: str) -> str:
+    safe = re.sub(r"\W+", "_", name).strip("_")
+    return f"__strut_stub_call_index_{safe}"
 
 
 def _stub_signatures(context: FunctionContext, cases: list[TestCase]) -> dict[str, StubSignature]:

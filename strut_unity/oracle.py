@@ -6,7 +6,7 @@ import subprocess
 
 from .analyzer import FunctionContext
 from .cases import TestCase, case_declarations, with_expected
-from .stubs import stub_definitions, stub_function_names, stub_prelude
+from .stubs import stub_case_setup, stub_definitions, stub_prelude
 
 
 def fill_expected_values(
@@ -62,8 +62,8 @@ def _oracle_source(context: FunctionContext, cases: list[TestCase]) -> str:
         lines.append("    {")
         for declaration in case_declarations(case):
             lines.append(f"        {declaration}")
-        if stub_function_names(context, [case]):
-            lines.append(f"        __strut_stub_case_index = {index};")
+        for setup in stub_case_setup(context, [case], index):
+            lines.append(f"        {setup}")
         args = ", ".join(case.args)
         lines.append(_oracle_print(context, f"{context.name}({args})"))
         lines.append("    }")
