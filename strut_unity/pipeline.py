@@ -11,7 +11,6 @@ from .cases import generate_seed_cases, TestCase
 from .coverage import collect_gcov_coverage
 from .llm_cases import generate_llm_cases, generate_optimized_llm_cases
 from .llm_client import LLMConfig, OpenAICompatibleClient, write_llm_trace
-from .oracle import fill_expected_values
 from .prompts import cases_to_strut_json
 from .source_rewriter import prepare_test_source
 from .stubs import stub_function_names
@@ -56,10 +55,29 @@ def run_pipeline(
         test_source, callable_name = prepare_test_source(source_path, build_dir, context.name, stubs)
         context = replace(context, source=str(test_source), name=callable_name)
         context_path.write_text(json.dumps(context.to_dict(), indent=2), encoding="utf-8")
-    cases = fill_expected_values(context, cases, source_path, build_dir)
-    result = _write_compile_run_collect(context, cases, source_path, test_source, build_dir, context_path, "initial")
+    pass_only_result = _write_compile_run_collect(
+        context,
+        cases,
+        source_path,
+        test_source,
+        build_dir,
+        context_path,
+        "initial_pass_only",
+        include_assertions=False,
+        artifact_suffix="pass_only",
+    )
+    result = _write_compile_run_collect(
+        context,
+        cases,
+        source_path,
+        test_source,
+        build_dir,
+        context_path,
+        "initial",
+        include_assertions=True,
+    )
 
-    result = {**result, **generation_info}
+    result = _with_metric_summary({**result, **generation_info}, pass_only_result)
     uncovered = result.get("coverage", {}).get("gcov", {}).get("uncovered_conditions", [])
     if not (optimize and case_source in {"llm", "hybrid"} and uncovered and result.get("run_returncode") == 0):
         return result
@@ -80,8 +98,28 @@ def run_pipeline(
             test_source, callable_name = prepare_test_source(source_path, build_dir, context.name, stubs)
             context = replace(context, source=str(test_source), name=callable_name)
             context_path.write_text(json.dumps(context.to_dict(), indent=2), encoding="utf-8")
-        extended_cases = fill_expected_values(context, extended_cases, source_path, build_dir)
-        optimized_result = _write_compile_run_collect(context, extended_cases, source_path, test_source, build_dir, context_path, "optimized")
+        optimized_pass_only_result = _write_compile_run_collect(
+            context,
+            extended_cases,
+            source_path,
+            test_source,
+            build_dir,
+            context_path,
+            "optimized_pass_only",
+            include_assertions=False,
+            artifact_suffix="optimized_pass_only",
+        )
+        optimized_result = _write_compile_run_collect(
+            context,
+            extended_cases,
+            source_path,
+            test_source,
+            build_dir,
+            context_path,
+            "optimized",
+            include_assertions=True,
+            artifact_suffix="optimized",
+        )
         optimized_trace = write_llm_trace(build_dir, f"{context.name}_optimization", prompt, response)
     except Exception as exc:
         return {
@@ -94,7 +132,7 @@ def run_pipeline(
             },
         }
     if optimized_result.get("compile_returncode") != 0 or optimized_result.get("run_returncode") != 0:
-        return {
+        return _with_metric_summary({
             **result,
             "optimization": {
                 "enabled": True,
@@ -104,8 +142,9 @@ def run_pipeline(
                 **optimized_trace,
             },
             "optimized_result": optimized_result,
-        }
-    return {
+            "optimized_pass_only_result": optimized_pass_only_result,
+        }, result.get("pass_only_result", {}))
+    return _with_metric_summary({
         **optimized_result,
         **generation_info,
         "optimization": {
@@ -115,7 +154,8 @@ def run_pipeline(
             **optimized_trace,
         },
         "initial_result": result,
-    }
+        "optimized_pass_only_result": optimized_pass_only_result,
+    }, optimized_pass_only_result)
 
 
 def _write_compile_run_collect(
@@ -126,13 +166,16 @@ def _write_compile_run_collect(
     build_dir: Path,
     context_path: Path,
     label: str,
+    include_assertions: bool = True,
+    artifact_suffix: str | None = None,
 ) -> dict:
-    case_path = build_dir / f"{context.name}_cases.json"
-    test_path = build_dir / f"test_{context.name}.c"
-    exe_path = build_dir / f"test_{context.name}"
+    artifact_name = context.name if artifact_suffix is None else f"{context.name}_{artifact_suffix}"
+    case_path = build_dir / f"{artifact_name}_cases.json"
+    test_path = build_dir / f"test_{artifact_name}.c"
+    exe_path = build_dir / f"test_{artifact_name}"
 
     case_path.write_text(json.dumps(cases_to_strut_json(context, cases, backend=True), indent=2), encoding="utf-8")
-    write_unity_test(context, cases, test_path)
+    write_unity_test(context, cases, test_path, include_assertions=include_assertions)
 
     compile_cmd = [
         "clang",
@@ -158,6 +201,8 @@ def _write_compile_run_collect(
             "cases": str(case_path),
             "test": str(test_path),
             "stage": label,
+            "assertions_enabled": include_assertions,
+            "status": "compile_error",
             "compile_cmd": compile_cmd,
             "compile_returncode": compile_result.returncode,
             "compile_stdout": compile_result.stdout,
@@ -166,12 +211,15 @@ def _write_compile_run_collect(
 
     run_result = subprocess.run([str(exe_path)], text=True, capture_output=True, check=False)
     gcov_coverage = collect_gcov_coverage(context, test_source, test_path, ROOT / "unity", build_dir, label)
+    status = "pass" if run_result.returncode == 0 else "run_error"
     return {
         "context": str(context_path),
         "cases": str(case_path),
         "test": str(test_path),
         "executable": str(exe_path),
         "stage": label,
+        "assertions_enabled": include_assertions,
+        "status": status,
         "compile_cmd": compile_cmd,
         "compile_returncode": compile_result.returncode,
         "compile_stdout": compile_result.stdout,
@@ -181,6 +229,38 @@ def _write_compile_run_collect(
         "run_stderr": run_result.stderr,
         "coverage": {"gcov": gcov_coverage},
     }
+
+
+def _with_metric_summary(result: dict, pass_only_result: dict) -> dict:
+    complete_status = _result_status(result)
+    pass_only_status = _result_status(pass_only_result)
+    return {
+        **result,
+        "complete_status": complete_status,
+        "pass_only_status": pass_only_status,
+        "pass_only_result": pass_only_result,
+        "metric_summary": {
+            "pass_only": pass_only_status,
+            "complete": complete_status,
+        },
+    }
+
+
+def _result_status(result: dict) -> str:
+    status = result.get("status")
+    if status:
+        return str(status)
+    compile_returncode = result.get("compile_returncode")
+    if compile_returncode is None:
+        return "not_run"
+    if compile_returncode != 0:
+        return "compile_error"
+    run_returncode = result.get("run_returncode")
+    if run_returncode is None:
+        return "not_run"
+    if run_returncode != 0:
+        return "run_error"
+    return "pass"
 
 
 def _generate_cases(
@@ -199,17 +279,19 @@ def _generate_cases(
     config = LLMConfig.from_values(base_url=llm_base_url, model=llm_model, api_key=llm_api_key)
 
     client = OpenAICompatibleClient(config)
-    llm_cases, prompt, response = generate_llm_cases(context, source_code, rules_cases, client)
+    seed_cases = rules_cases if case_source == "hybrid" else []
+    llm_cases, prompt, response = generate_llm_cases(context, source_code, seed_cases, client)
     info = {
         "case_source": case_source,
         "llm_base_url": config.base_url,
         "llm_model": config.model,
+        "seed_cases_used": len(seed_cases),
         **write_llm_trace(build_dir, f"{context.name}_generation", prompt, response),
     }
     if case_source == "llm":
         return llm_cases, info
     if case_source == "hybrid":
-        return _merge_cases(rules_cases, llm_cases), info
+        return llm_cases, info
     raise ValueError(f"Unsupported case source: {case_source}")
 
 

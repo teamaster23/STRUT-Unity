@@ -86,10 +86,21 @@ def _render_template(
     source_code: str,
     seed_cases: list[TestCase],
 ) -> str:
+    dependency_details = asdict(context.dependency_details)
+    dependency_details["callee_declarations"] = [
+        item
+        for item in dependency_details["callee_declarations"]
+        if should_stub_function(str(item.get("name", "")))
+    ]
+    dependency_details["callee_interfaces"] = [
+        item
+        for item in dependency_details["callee_interfaces"]
+        if should_stub_function(str(item.get("name", "")))
+    ]
     context_payload = {
         "function": context.name,
-        "dependencies": context.dependencies,
-        "dependency_details": asdict(context.dependency_details),
+        "dependencies": [name for name in context.dependencies if should_stub_function(name)],
+        "dependency_details": dependency_details,
         "global_refs": context.global_refs,
         "interface_data": {
             "return_type": context.return_type,

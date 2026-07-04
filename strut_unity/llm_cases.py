@@ -35,7 +35,7 @@ def generate_optimized_llm_cases(
 
 
 def parse_llm_cases(response: str, context: FunctionContext) -> list[TestCase]:
-    payload = json.loads(_extract_json(response))
+    payload = _load_llm_payload(response)
     raw_cases = payload["cases"]
     cases: list[TestCase] = []
     seen: set[tuple[tuple[str, str], ...]] = set()
@@ -54,15 +54,16 @@ def parse_llm_cases(response: str, context: FunctionContext) -> list[TestCase]:
 
 def _case_from_item(item: dict, context: FunctionContext, desc: str) -> TestCase:
     stubins = _parse_stubins(item)
+    outputs = _parse_outputs(item)
     if "args" in item:
-        return case_from_args(context, desc, list(item["args"]), stubins=stubins)
+        return case_from_args(context, desc, list(item["args"]), stubins=stubins, outputs=outputs)
 
     inputs = item.get("inputs")
     if not isinstance(inputs, list):
         raise ValueError("LLM case must contain either args or inputs")
 
     values_by_expr = {str(entry.get("expr")): entry.get("value") for entry in inputs if isinstance(entry, dict)}
-    return case_from_structured_inputs(context, desc, values_by_expr, stubins=stubins)
+    return case_from_structured_inputs(context, desc, values_by_expr, stubins=stubins, outputs=outputs)
 
 
 def _parse_stubins(item: dict) -> tuple[StubIn, ...]:
@@ -82,6 +83,13 @@ def _parse_stubins(item: dict) -> tuple[StubIn, ...]:
     return tuple(stubins)
 
 
+def _parse_outputs(item: dict) -> tuple[OutputValue, ...]:
+    raw_outputs = item.get("outputs", [])
+    if not isinstance(raw_outputs, list):
+        return ()
+    return tuple(_output_value(entry) for entry in raw_outputs if isinstance(entry, dict))
+
+
 def _output_value(entry: dict) -> OutputValue:
     return OutputValue(
         expr=str(entry.get("expr", "")),
@@ -90,17 +98,52 @@ def _output_value(entry: dict) -> OutputValue:
     )
 
 
+def _load_llm_payload(text: str) -> dict:
+    payload = json.loads(_extract_json(text))
+    if isinstance(payload, list):
+        return {"cases": payload}
+    if not isinstance(payload, dict):
+        raise ValueError("LLM response JSON must be an object")
+    if "cases" not in payload:
+        raise ValueError("LLM response JSON must contain a cases array")
+    return payload
+
+
 def _extract_json(text: str) -> str:
     stripped = text.strip()
-    if stripped.startswith("{") and stripped.endswith("}"):
-        return stripped
 
-    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", stripped, re.DOTALL)
-    if fenced:
-        return fenced.group(1)
+    fenced_candidates = re.findall(r"```(?:json)?\s*(.*?)\s*```", stripped, re.DOTALL | re.IGNORECASE)
+    for candidate in _json_candidates(fenced_candidates):
+        if _has_cases(candidate):
+            return candidate
 
-    start = stripped.find("{")
-    end = stripped.rfind("}")
-    if start != -1 and end != -1 and end > start:
-        return stripped[start : end + 1]
+    for candidate in _json_candidates([stripped]):
+        if _has_cases(candidate):
+            return candidate
+
+    for candidate in _json_candidates(fenced_candidates + [stripped]):
+        return candidate
     raise ValueError("Could not find a JSON object in LLM response")
+
+
+def _json_candidates(texts: list[str]) -> list[str]:
+    decoder = json.JSONDecoder()
+    candidates: list[str] = []
+    for text in texts:
+        for index, char in enumerate(text):
+            if char not in "{[":
+                continue
+            try:
+                _, end = decoder.raw_decode(text[index:])
+            except json.JSONDecodeError:
+                continue
+            candidates.append(text[index : index + end])
+    return candidates
+
+
+def _has_cases(candidate: str) -> bool:
+    try:
+        payload = json.loads(candidate)
+    except json.JSONDecodeError:
+        return False
+    return isinstance(payload, dict) and isinstance(payload.get("cases"), list)

@@ -17,7 +17,7 @@ class LLMConfig:
     base_url: str
     model: str
     api_key: str
-    timeout_seconds: int = 300
+    timeout_seconds: int = 600
 
     @classmethod
     def from_env(cls) -> "LLMConfig":

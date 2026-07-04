@@ -5,8 +5,8 @@ STRUT-Unity connects STRUT-style C test-case generation with the Unity C unit-te
 Given a C source file and one target function, it can:
 
 - extract function context with `libclang` and `tree-sitter-c`;
-- generate deterministic seed cases, LLM cases, or a hybrid of both;
-- compute expected return values by compiling a small oracle program;
+- generate deterministic seed cases, LLM cases, or seed-guided LLM cases;
+- use the `outputs` supplied by generated cases as Unity assertions;
 - emit Unity test code;
 - compile and run the generated test binary;
 - report estimated branch coverage and `gcov` coverage when available.
@@ -23,7 +23,7 @@ Generated files are written under `build/`. The directory is disposable.
   - `llm_client.py`: OpenAI-compatible chat-completions client.
   - `llm_cases.py`: LLM response parsing and conversion into internal test cases.
   - `prompts.py`: loads prompt files and renders LLM messages.
-  - `oracle.py`: compiles/runs oracle programs to fill expected outputs.
+  - `oracle.py`: legacy helper for oracle-based expected-output experiments; not used by the default pipeline.
   - `source_rewriter.py`: rewrites `main` and stubbed callee names for test builds.
   - `stubs.py`: generates C stubs from structured `stubins`.
   - `unity_writer.py`: writes Unity C test files.
@@ -48,7 +48,7 @@ pip install clang tree-sitter tree-sitter-c
 
 The runtime also expects:
 
-- `clang` for normal test and oracle compilation;
+- `clang` for normal test compilation;
 - `gcc` and `gcov` for coverage collection;
 - an OpenAI-compatible LLM endpoint for `llm` or `hybrid` mode.
 
@@ -75,8 +75,8 @@ python3 -m strut_unity _dataset/data_structures/array/carray.c \
 `--case-source` supports:
 
 - `rules`: deterministic seed cases only.
-- `llm`: LLM-generated cases only.
-- `hybrid`: merge deterministic seed cases with LLM-generated cases. This is the default.
+- `llm`: LLM-generated cases without structured seed-case examples.
+- `hybrid`: use deterministic seed cases as structured examples for the LLM, then use the LLM-generated cases as the test suite. This is the default.
 
 LLM and hybrid modes run an optimization pass by default when estimated branch outcomes are still uncovered after the first run. Use `--no-optimize` to skip that pass.
 
@@ -209,7 +209,7 @@ The demo targets currently reference `examples/classify_score.c`. If that file i
 ## Notes
 
 - Prompt files are loaded at runtime by `strut_unity/prompts.py`; they are not generated artifacts.
-- The LLM is asked for structured test inputs. Expected return values are recomputed locally by the oracle step before Unity assertions are written.
+- The LLM is asked for structured test cases with `inputs`, `stubs`, and `outputs`; the `outputs` are written directly as Unity assertions.
 - Supported generated inputs include scalar basic types, arrays by element zero, pointers with local targets or `NULL` when a null branch is visible, and struct pointers with bounded field expansion.
 - `build/`, `__pycache__/`, `.pyc`, `.gcda`, `.gcno`, and `.gcov` files are disposable intermediate outputs.
 
@@ -220,8 +220,8 @@ STRUT-Unity 将 STRUT 风格的 C 语言测试用例生成流程和 Unity C 单�
 给定一个 C 源文件和一个目标函数后，它可以：
 
 - 使用 `libclang` 和 `tree-sitter-c` 提取函数上下文；
-- 生成确定性种子用例、LLM 用例，或二者混合后的用例；
-- 通过编译一个小型 oracle 程序计算期望返回值；
+- 生成确定性种子用例、LLM 用例，或由种子用例引导的 LLM 用例；
+- 直接使用生成用例中的 `outputs` 作为 Unity 断言；
 - 生成 Unity 测试代码；
 - 编译并运行生成的测试二进制文件；
 - 在可用时输出估算分支覆盖率和 `gcov` 覆盖率。
@@ -238,7 +238,7 @@ STRUT-Unity 将 STRUT 风格的 C 语言测试用例生成流程和 Unity C 单�
   - `llm_client.py`：OpenAI-compatible chat-completions 客户端。
   - `llm_cases.py`：解析 LLM 响应并转换为内部测试用例。
   - `prompts.py`：加载 prompt 文件并渲染 LLM 消息。
-  - `oracle.py`：编译并运行 oracle 程序，用于回填 expected outputs。
+  - `oracle.py`：用于 oracle-based expected-output 实验的历史辅助模块；默认 pipeline 不使用。
   - `source_rewriter.py`：为测试构建重写 `main` 和被 stub 的被调函数名。
   - `stubs.py`：根据结构化 `stubins` 生成 C stub。
   - `unity_writer.py`：生成 Unity C 测试文件。
@@ -263,7 +263,7 @@ pip install clang tree-sitter tree-sitter-c
 
 运行时还需要：
 
-- `clang`：用于普通测试和 oracle 编译；
+- `clang`：用于普通测试编译；
 - `gcc` 和 `gcov`：用于覆盖率收集；
 - OpenAI-compatible LLM endpoint：用于 `llm` 或 `hybrid` 模式。
 
@@ -290,8 +290,8 @@ python3 -m strut_unity _dataset/data_structures/array/carray.c \
 `--case-source` 支持：
 
 - `rules`：只使用确定性种子用例。
-- `llm`：只使用 LLM 生成的用例。
-- `hybrid`：合并确定性种子用例和 LLM 生成用例。这是默认模式。
+- `llm`：不提供结构化 seed-case 示例，直接使用 LLM 生成的用例。
+- `hybrid`：先把确定性种子用例作为结构化示例提供给 LLM，再使用 LLM 生成的用例作为测试套件。这是默认模式。
 
 `llm` 和 `hybrid` 模式下，如果第一次运行后估算分支结果仍有未覆盖项，默认会运行一次优化生成 pass。使用 `--no-optimize` 可以跳过该 pass。
 
@@ -424,6 +424,6 @@ make clean
 ## 说明
 
 - Prompt 文件由 `strut_unity/prompts.py` 在运行时读取；它们不是生成产物。
-- LLM 只需要生成结构化测试输入。期望返回值会在本地通过 oracle 步骤重新计算，然后再写入 Unity 断言。
+- LLM 需要生成包含 `inputs`、`stubs` 和 `outputs` 的结构化测试用例；`outputs` 会被直接写成 Unity 断言。
 - 当前支持的生成输入包括基础标量类型、使用第 0 个元素初始化的数组、带本地目标或可见空指针分支时的 `NULL` 指针，以及有限深度展开字段的结构体指针。
 - `build/`、`__pycache__/`、`.pyc`、`.gcda`、`.gcno` 和 `.gcov` 都是可删除的中间产物。

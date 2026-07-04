@@ -101,7 +101,7 @@ def run_single(
     results_dir: Path,
     case_source: str = "hybrid",
     llm_model: str = "qwen3.5:latest",
-    timeout: int = 300,
+    timeout: int = 600,
     no_optimize: bool = False,
     index: int | None = None,
 ) -> dict:
@@ -166,6 +166,14 @@ def run_single(
 
     status = "✅ OK" if returncode == 0 else f"❌ FAILED (rc={returncode})"
     print(f"Result: {status}")
+    parsed = entry.get("parsed") or {}
+    metric_summary = parsed.get("metric_summary") if isinstance(parsed, dict) else None
+    if isinstance(metric_summary, dict):
+        print(
+            "Metrics: "
+            f"pass_only={metric_summary.get('pass_only', 'unknown')} / "
+            f"complete={metric_summary.get('complete', 'unknown')}"
+        )
     if returncode != 0:
         print(f"stderr: {stderr[-500:]}")
     print(f"Artefacts: {subdir}")
@@ -189,7 +197,7 @@ def main() -> int:
     parser.add_argument("--case-source", default="hybrid", choices=["rules", "llm", "hybrid"])
     parser.add_argument("--llm-model", default="qwen3.5:latest")
     parser.add_argument("--limit", type=int, default=None, help="Only run first N function targets (for testing).")
-    parser.add_argument("--timeout", type=int, default=300, help="Timeout in seconds for each function target.")
+    parser.add_argument("--timeout", type=int, default=600, help="Timeout in seconds for each function target.")
     parser.add_argument("--include-main", action="store_true", help="Also test main functions. Defaults to skipping main.")
     parser.add_argument("--no-optimize", action="store_true", help="Skip LLM optimization pass after initial run.")
     args = parser.parse_args()

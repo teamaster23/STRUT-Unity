@@ -16,7 +16,12 @@ from .cases import (
 from .stubs import stub_case_setup, stub_definitions, stub_prelude
 
 
-def write_unity_test(context: FunctionContext, cases: list[TestCase], output_path: str | Path) -> Path:
+def write_unity_test(
+    context: FunctionContext,
+    cases: list[TestCase],
+    output_path: str | Path,
+    include_assertions: bool = True,
+) -> Path:
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     lines = [
@@ -45,11 +50,20 @@ def write_unity_test(context: FunctionContext, cases: list[TestCase], output_pat
         for setup in stub_case_setup(context, [case], index):
             lines.append(f"    {setup}")
         actual = "__strut_actual"
+        return_output = case_return_output(context, case)
+        if not include_assertions:
+            if _normalize_type(context.return_type) == "void":
+                lines.append(f"    {context.name}({args});")
+            else:
+                lines.append(f"    (void){context.name}({args});")
+            lines.extend(["}", ""])
+            continue
         if _normalize_type(context.return_type) == "void":
             lines.append(f"    {context.name}({args});")
-        else:
+        elif return_output:
             lines.append(f"    {context.return_type} {actual} = {context.name}({args});")
-        return_output = case_return_output(context, case)
+        else:
+            lines.append(f"    (void){context.name}({args});")
         for assertion in _assertions(context, return_output.value if return_output else None, actual):
             lines.append(f"    {assertion}")
         for case_output in case_outputs(context, case):

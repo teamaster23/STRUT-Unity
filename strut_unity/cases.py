@@ -391,10 +391,14 @@ def _field_initialization(
     expr = f"{public_base}->{field.name}"
     normalized_expr = _normalize_expr(expr)
     if field.type_kind == "array":
-        value = overrides.get(_normalize_expr(f"{expr}[0]"), _default_value_for_type(field.element_type or field.c_type))
-        return [f"{access}[0] = {_literal_for_type(field.element_type or field.c_type, value)};"], [
-            InputValue(expr=f"{expr}[0]", c_type=field.element_type or field.c_type, value=value)
+        c_type = field.element_type or field.c_type
+        values = _indexed_override_values(expr, overrides, _default_value_for_type(c_type))
+        lines = [
+            f"{access}[{index}] = {_literal_for_type(c_type, value)};"
+            for index, value in enumerate(values)
         ]
+        inputs = [InputValue(expr=f"{expr}[{index}]", c_type=c_type, value=value) for index, value in enumerate(values)]
+        return lines, inputs
 
     if field.type_kind == "pointer" and max_depth > 0:
         pointee_type = field.pointee_type or _strip_pointer(field.c_type) or "int"
@@ -412,14 +416,17 @@ def _field_initialization(
                 inputs.append(InputValue(expr=expr, c_type=field.c_type, value=f"&{target}"))
             return declarations, inputs
         target = f"{_safe_name(variable_base)}_{field.name}_target"
-        value = overrides.get(
-            _normalize_expr(f"{expr}[0]"),
-            overrides.get(_normalize_expr(f"*{expr}"), _default_value_for_type(pointee_type)),
-        )
         length = _pointer_target_length(public_base, expr, overrides)
-        literal = _literal_for_type(pointee_type, value)
-        return [f"{pointee_type} {target}[{length}] = {{{literal}}};", f"{access} = {target};"], [
-            InputValue(expr=f"{expr}[0]", c_type=pointee_type, value=value)
+        values = _indexed_override_values(
+            expr,
+            overrides,
+            overrides.get(_normalize_expr(f"*{expr}"), _default_value_for_type(pointee_type)),
+            length=length,
+        )
+        initializer = ", ".join(_literal_for_type(pointee_type, value) for value in values)
+        return [f"{pointee_type} {target}[{length}] = {{{initializer}}};", f"{access} = {target};"], [
+            InputValue(expr=f"{expr}[{index}]", c_type=pointee_type, value=value)
+            for index, value in enumerate(values)
         ]
 
     value = overrides.get(normalized_expr, _default_value_for_type(field.c_type))
@@ -445,6 +452,28 @@ def _pointer_target_length(public_base: str, expr: str, overrides: dict[str, str
     if position is not None:
         length = max(length, position + 1)
     return min(length, 1024)
+
+
+def _indexed_override_values(
+    expr: str,
+    overrides: dict[str, str],
+    default: str,
+    length: int | None = None,
+) -> list[str]:
+    indexed_expr = re.compile(rf"{re.escape(_normalize_expr(expr))}\[(\d+)\]")
+    indexed_values: dict[int, str] = {}
+    for override_expr, value in overrides.items():
+        match = indexed_expr.fullmatch(override_expr)
+        if match:
+            indexed_values[int(match.group(1))] = value
+
+    if not indexed_values:
+        indexed_values[0] = overrides.get(_normalize_expr(f"{expr}[0]"), default)
+
+    required_length = max(indexed_values) + 1
+    if length is not None:
+        required_length = max(required_length, length)
+    return [indexed_values.get(index, default) for index in range(min(required_length, 1024))]
 
 
 def _positive_int(value: str | None) -> int | None:

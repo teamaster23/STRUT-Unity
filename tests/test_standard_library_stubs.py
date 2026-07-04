@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 import unittest
 
-from strut_unity.analyzer import CalleeInterface, DependencyDetails, FunctionContext
+from strut_unity.analyzer import CalleeInterface, DependencyDetails, DependencyItem, FunctionContext
 from strut_unity.cases import OutputValue, StubIn, TestCase
-from strut_unity.prompts import cases_to_structured_json
+from strut_unity.prompts import build_case_generation_messages, cases_to_structured_json
 from strut_unity.stubs import should_stub_function, stub_function_names, stub_prelude
 
 
@@ -43,7 +44,10 @@ def _context() -> FunctionContext:
             typedefs=[],
             structs=[],
             global_variables=[],
-            callee_declarations=[],
+            callee_declarations=[
+                DependencyItem(name="malloc", kind="callee_declaration", signature="void *malloc(size_t size)"),
+                DependencyItem(name="helper", kind="callee_declaration", signature="int helper(void)"),
+            ],
             callee_interfaces=[
                 CalleeInterface(
                     name="malloc",
@@ -133,6 +137,22 @@ class StandardLibraryStubsTest(unittest.TestCase):
 
         stubs = payload["cases"][0]["stubs"]
         self.assertEqual([stub["called function"] for stub in stubs], ["int helper(void)"])
+
+    def test_prompt_context_filters_standard_library_callees(self) -> None:
+        messages = build_case_generation_messages(_context(), "int target(void) { return helper(); }", [])
+        content = messages[1]["content"]
+        raw_context = content.split("Function Context Database:\n", 1)[1].split("\nFunction Source Code:", 1)[0]
+        payload = json.loads(raw_context)
+
+        self.assertEqual(payload["dependencies"], ["helper"])
+        self.assertEqual(
+            [item["name"] for item in payload["dependency_details"]["callee_declarations"]],
+            ["helper"],
+        )
+        self.assertEqual(
+            [item["name"] for item in payload["dependency_details"]["callee_interfaces"]],
+            ["helper"],
+        )
 
 
 if __name__ == "__main__":
