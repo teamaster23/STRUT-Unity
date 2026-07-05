@@ -132,7 +132,7 @@ def _structured_system_prompt() -> str:
         "Return only strict JSON matching the provided JSON structure. "
         "Generate compact branch-covering cases. Use parameter names exactly as shown. "
         "Do not include markdown, comments, prose, or complete test code. "
-        "Expected outputs may be omitted or provisional because the runner computes them with an oracle."
+        "Provide expected outputs for values that should become Unity assertions."
     )
 
 

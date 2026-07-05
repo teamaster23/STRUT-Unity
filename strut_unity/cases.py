@@ -47,17 +47,13 @@ class TestCase:
         self,
         desc: str,
         bindings: tuple[ArgumentBinding, ...],
-        expected: Any | None = None,
         stubins: tuple[StubIn, ...] = (),
         outputs: tuple[OutputValue, ...] = (),
     ):
-        normalized_outputs = tuple(outputs)
-        if expected is not None and not any(_is_generic_return_expr(output.expr) for output in normalized_outputs):
-            normalized_outputs = (*normalized_outputs, OutputValue("returnValue", "", expected))
         object.__setattr__(self, "desc", desc)
         object.__setattr__(self, "bindings", tuple(bindings))
         object.__setattr__(self, "stubins", tuple(stubins))
-        object.__setattr__(self, "outputs", normalized_outputs)
+        object.__setattr__(self, "outputs", tuple(outputs))
 
     @property
     def args(self) -> tuple[str, ...]:
@@ -66,13 +62,6 @@ class TestCase:
     @property
     def input_values(self) -> tuple[InputValue, ...]:
         return tuple(value for binding in self.bindings for value in binding.inputs)
-
-    @property
-    def expected(self) -> Any | None:
-        for output in self.outputs:
-            if _is_generic_return_expr(output.expr):
-                return output.value
-        return None
 
     def identity(self) -> tuple[tuple[str, str], ...]:
         stub_identity = tuple(
@@ -238,22 +227,6 @@ def case_from_args(
         value = args[index] if index < len(args) else _default_value(parameter)
         bindings.append(_binding_for_parameter(parameter, _format_value(value)))
     return TestCase(desc=desc, bindings=tuple(bindings), stubins=stubins, outputs=outputs)
-
-
-def with_expected(case: TestCase, expected: Any, context: FunctionContext | None = None) -> TestCase:
-    return_expr = _return_expr(context) if context is not None else "returnValue"
-    return_type = context.return_type if context is not None else ""
-    outputs = tuple(
-        output
-        for output in case.outputs
-        if not (_is_generic_return_expr(output.expr) or (context is not None and is_return_output(context, output.expr)))
-    )
-    return TestCase(
-        desc=case.desc,
-        bindings=case.bindings,
-        stubins=case.stubins,
-        outputs=(*outputs, OutputValue(return_expr, return_type, expected)),
-    )
 
 
 def _append_case(cases: list[TestCase], seen: set[tuple[tuple[str, str], ...]], case: TestCase) -> None:
